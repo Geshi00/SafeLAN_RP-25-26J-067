@@ -4,7 +4,7 @@ import os
 import tkinter as tk
 from tkinter import messagebox
 from pynput import keyboard
-#hello
+
 
 class SafeLANCollector5:
     def __init__(self):
