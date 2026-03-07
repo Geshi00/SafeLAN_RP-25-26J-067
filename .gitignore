@@ -3,3 +3,6 @@
 /Client1/clientVENV
 *.pkl
 /Server/server/logs
+*.db
+*.docx
+/Server/server/vault
