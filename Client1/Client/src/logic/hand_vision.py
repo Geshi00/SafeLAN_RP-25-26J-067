@@ -41,7 +41,6 @@ class HandDigitRecognizer:
         success, frame = self.cap.read()
         if not success: return None, None, False, 0
 
-        # No Mirroring for natural interaction
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         ts = int((time.time() - self.session_start) * 1000)
