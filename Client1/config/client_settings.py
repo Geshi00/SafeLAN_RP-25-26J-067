@@ -3,7 +3,7 @@
 REQUIRED_SAMPLES = 25  
 
 # --- GESTURE SECURITY SETTINGS ---
-REQUIRED_HANDS = 2           # Number of hands for AI to track (1-2)
+REQUIRED_HANDS = 2           # Number of hands for to track (1-2)
 GESTURE_HOLD_SECONDS = 1.0   # Hold duration required to confirm a digit
 
 # --- VISION CONFIDENCE ---
