@@ -1,4 +1,18 @@
 import sys, os, time
+
+def setup_tcl_tk():
+    """Fix for Tcl/Tk initialization error on Windows environments."""
+    if sys.platform == 'win32':
+        tcl_dir = os.path.join(sys.base_prefix, 'tcl')
+        if os.path.exists(tcl_dir):
+            for item in os.listdir(tcl_dir):
+                if item.startswith('tcl8.'):
+                    os.environ['TCL_LIBRARY'] = os.path.join(tcl_dir, item)
+                elif item.startswith('tk8.'):
+                    os.environ['TK_LIBRARY'] = os.path.join(tcl_dir, item)
+
+setup_tcl_tk()
+
 import customtkinter as ctk
 
 # --- 1. DYNAMIC PATH INJECTION ---
