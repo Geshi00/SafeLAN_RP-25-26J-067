@@ -193,9 +193,11 @@ class Blockchain:
                 if not can_view:
                     continue
                 # Filter to requested user
-                if (tx.get("sender") == user_id or tx.get("receiver") == user_id or
-                        tx.get("file_owner") == user_id or
-                        (user_id == "PUBLIC" and tx.get("receiver") == "PUBLIC")):
+                if user_id == "PUBLIC":
+                    if effective_role == 'admin' or tx.get("receiver") == "PUBLIC":
+                        all_tx.append(tx)
+                elif (tx.get("sender") == user_id or tx.get("receiver") == user_id or
+                        tx.get("file_owner") == user_id):
                     all_tx.append(tx)
         return sorted(all_tx, key=lambda x: x.get("timestamp", 0))
 
