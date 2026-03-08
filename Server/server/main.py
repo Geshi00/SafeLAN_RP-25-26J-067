@@ -1,17 +1,28 @@
 from fastapi import FastAPI, Request, UploadFile, File, Form
+# Version: 1.0.1 (Role Propagation Fix)
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-import shutil, os, json, pandas as pd
+import shutil, os, json, pandas as pd, time
 import numpy as np
-import joblib
+import joblib, hashlib
 from datetime import datetime
+import hashlib
 
 # Internal Server-Side Imports
 from server.database import (
     retrieve_user_identity, init_db, save_enrollment, 
-    sync_file_metadata, get_visible_files, remove_file_metadata
+    sync_file_metadata, get_visible_files, remove_file_metadata,
+    get_all_usernames, get_all_filenames, get_file_metadata
 )
 from server.services.trust_engine import calculate_trust_index
+
+# --- BLOCKCHAIN INTEGRATION ---
+from server.blockchain import Blockchain, Transaction, Authority
+
+# Initialize Blockchain with a default admin authority
+admin_auth = Authority("ADMIN_01", "SafeLAN Central Authority")
+blockchain = Blockchain(authorities={admin_auth.authority_id: admin_auth.to_dict()})
+blockchain.register_user("ADMIN_01", "admin")
 
 app = FastAPI()
 
@@ -36,6 +47,17 @@ def startup():
     os.makedirs(STORAGE_BASE, exist_ok=True)
     os.makedirs(VAULT_DIR, exist_ok=True)
     init_db()
+    
+    # Mine any pending transactions that became overdue while the server was offline
+    if blockchain.pending_transactions:
+        time_since_last_block = time.time() - blockchain.last_block_time
+        print(f"[STARTUP] Found {len(blockchain.pending_transactions)} pending transactions. "
+              f"Time since last block: {time_since_last_block:.0f}s")
+        if time_since_last_block >= blockchain.block_creation_interval:
+            print("[STARTUP] Mining overdue pending transactions...")
+            blockchain.force_block_creation(authority_id="ADMIN_01")
+        else:
+            print(f"[STARTUP] Transactions not yet overdue. Will be mined in {blockchain.block_creation_interval - time_since_last_block:.0f}s")
 
 @app.get("/health")
 async def health():
@@ -131,26 +153,157 @@ async def list_files(user: str = "PUBLIC"):
     return get_visible_files(user.upper())
 
 @app.get("/files/download/{filename}")
-async def download_shared_file(filename: str):
+async def download_shared_file(filename: str, user: str = "Unknown", role: str = "user", action: str = "DOWNLOAD"):
     file_path = os.path.join(VAULT_DIR, filename)
     if os.path.exists(file_path):
+        try:
+            # Determine actual receiver and owner from database
+            receiver = user.upper()
+            owner = user.upper()  # Default to requesting user, not "VAULT"
+            meta = get_file_metadata(filename)
+            if meta:
+                owner = meta['owner']
+                # If target is PUBLIC, record as PUBLIC in audit logs
+                if meta['target_user'] == 'PUBLIC':
+                    receiver = "PUBLIC"
+                print(f"[DEBUG] {action}: File={filename}, Owner={owner}, Target={meta['target_user']}, Receiver={receiver}")
+            else:
+                print(f"[DEBUG] {action}: File {filename} NOT found in DB, using sender as owner")
+
+            # Record blockchain transaction
+            with open(file_path, "rb") as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+            
+            tx = Transaction(
+                file_hash=file_hash,
+                sender=user.upper(),
+                receiver=receiver,
+                action=action.upper(),
+                role=role,
+                file_owner=owner,
+                filename=filename
+            )
+            result = blockchain.add_transaction(tx.to_dict())
+            print(f"[DEBUG] Blockchain add result: {result} for action={action.upper()}")
+            if not result:
+                print(f"[WARNING] Blockchain REJECTED {action} for {filename}")
+        except Exception as tx_err:
+            print(f"[BLOCKCHAIN ERROR] Failed to record {action}: {tx_err}")
+        
         return FileResponse(path=file_path, filename=filename, media_type='application/octet-stream')
     return {"status": "NOT_FOUND"}, 404
 
 @app.post("/files/upload")
-async def upload_shared_file(file: UploadFile = File(...), owner: str = Form(...), target: str = Form("PUBLIC")):
+async def upload_shared_file(file: UploadFile = File(...), owner: str = Form(...), role: str = Form("user"), target: str = Form("PUBLIC")):
     file_path = os.path.join(VAULT_DIR, file.filename)
+    action = "MODIFY" if os.path.exists(file_path) else "UPLOAD"
+    
+    # Determine original owner to enforce smart contract ownership rules
+    original_owner = owner.upper()
+    meta = get_file_metadata(file.filename)
+    if meta:
+        original_owner = meta['owner']
+        print(f"[DEBUG] Modification detected for {file.filename}. Original owner: {original_owner}")
+
+    # Save file to disk
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+    
     size_str = f"{round(os.path.getsize(file_path)/1024, 1)} KB"
     date_str = datetime.now().strftime('%Y-%m-%d')
     sync_file_metadata(file.filename, owner.upper(), target.upper(), size_str, date_str)
+    
+    try:
+        # Record blockchain transaction
+        print(f"[DEBUG] Recording {action} to blockchain for {file.filename}...")
+        with open(file_path, "rb") as f:
+            file_hash = hashlib.sha256(f.read()).hexdigest()
+        
+        tx = Transaction(
+            file_hash=file_hash,
+            sender=owner.upper(),
+            receiver=target.upper(),
+            action=action,
+            role=role,
+            file_owner=original_owner,
+            filename=file.filename
+        )
+        success = blockchain.add_transaction(tx.to_dict())
+        if success:
+            print(f"[DEBUG] Successfully recorded {action} for {file.filename}")
+        else:
+            print(f"[DEBUG] Blockhain rejected {action} for {file.filename} (Validation failed)")
+    except Exception as tx_err:
+        print(f"[BLOCKCHAIN ERROR] Failed to record upload/modify: {tx_err}")
+    
     return {"status": "SUCCESS"}
 
 @app.delete("/files/delete/{filename}")
-async def delete_file(filename: str):
+async def delete_file(filename: str, user: str = "Unknown", role: str = "user"):
     path = os.path.join(VAULT_DIR, filename)
     if os.path.exists(path):
+        try:
+            # NEW: Determine actual owner/target for DELETE record
+            file_owner = user.upper()
+            target_user = "SYSTEM"
+            try:
+                from server.database import DB_PATH
+                import sqlite3
+                conn = sqlite3.connect(DB_PATH, timeout=10)
+                cur = conn.cursor()
+                cur.execute("SELECT owner, target_user FROM shared_files WHERE filename = ?", (filename,))
+                row = cur.fetchone()
+                if row:
+                    file_owner = row[0]
+                    target_user = row[1]
+                conn.close()
+            except: pass
+
+            # Record blockchain transaction before deletion
+            file_hash = hashlib.sha256(filename.encode()).hexdigest() 
+            tx = Transaction(
+                file_hash=file_hash,
+                sender=user.upper(),
+                receiver=target_user,
+                action="DELETE",
+                role=role,
+                file_owner=file_owner,
+                filename=filename
+            )
+            blockchain.add_transaction(tx.to_dict())
+            print(f"[DEBUG] Recorded DELETE for {filename} (Target: {target_user})")
+        except Exception as tx_err:
+            print(f"[BLOCKCHAIN ERROR] Failed to record delete: {tx_err}")
+        
         os.remove(path)
     remove_file_metadata(filename)
     return {"status": "SUCCESS"}
+
+@app.get("/logs/user/{user_id}")
+async def get_user_logs(user_id: str, requesting_user_id: str = "Unknown", role: str = None):
+    print(f"[DEBUG] Fetching logs for user: {user_id} (Requester: {requesting_user_id}, Role: {role})")
+    logs = blockchain.get_logs_for_user(user_id.upper(), requesting_user_id.upper(), role)
+    print(f"[DEBUG] Found {len(logs)} logs")
+    return logs
+
+@app.get("/logs/filename/{filename}")
+async def get_file_logs(filename: str, requesting_user_id: str = "Unknown", role: str = None):
+    print(f"[DEBUG] Fetching logs for filename: {filename} (Requester: {requesting_user_id}, Role: {role})")
+    logs = blockchain.get_logs_for_filename(filename, requesting_user_id.upper(), role)
+    print(f"[DEBUG] Found {len(logs)} logs")
+    return logs
+    
+@app.get("/users/all")
+async def list_all_users():
+    return get_all_usernames()
+
+@app.get("/files/all")
+async def list_all_files():
+    return get_all_filenames()
+
+@app.get("/blockchain/stats")
+async def get_blockchain_stats():
+    return {
+        "total_blocks": len(blockchain.chain),
+        "total_transactions": blockchain.count_transactions() + len(blockchain.pending_transactions)
+    }

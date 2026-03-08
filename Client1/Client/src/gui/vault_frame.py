@@ -1,5 +1,10 @@
 import customtkinter as ctk
+import os
+import tempfile
+import threading
+import time
 from tkinter import filedialog, messagebox
+import requests
 from Client.src.logic.vault_engine import VaultEngine
 
 class VaultFrame(ctk.CTkFrame):
@@ -8,6 +13,7 @@ class VaultFrame(ctk.CTkFrame):
         self.controller = controller
         self.engine = VaultEngine()
         self.username = "Unknown"
+        self.role = "user"
         self.all_files = [] 
 
         self.pack_propagate(False)
@@ -57,6 +63,14 @@ class VaultFrame(ctk.CTkFrame):
         self.all_files = data["files"]
         self.count_lbl.configure(text=f"Visible Items: {data['count']}")
         self.size_lbl.configure(text=f"Total Storage: {data['total_kb']:.1f} KB")
+        
+        # Hide upload button if admin
+        if hasattr(self, "up_btn"):
+            if self.role == "admin":
+                self.up_btn.pack_forget()
+            else:
+                self.up_btn.pack(side="right", padx=25)
+        
         self._render_list(self.all_files)
 
     def _render_list(self, file_list):
@@ -75,21 +89,34 @@ class VaultFrame(ctk.CTkFrame):
             icon = "🌐" if is_public else "🔐"
             scope_txt = "PUBLIC" if is_public else f"TO: {f.get('target')}"
             
-            ctk.CTkLabel(row, text=icon, font=("Segoe UI", 14)).pack(side="left", padx=(15, 5))
-            ctk.CTkLabel(row, text=scope_txt, font=("Segoe UI", 9, "bold"), text_color="#7F8C8D", width=60).pack(side="left")
+            icon_lbl = ctk.CTkLabel(row, text=icon, font=("Segoe UI", 14))
+            icon_lbl.pack(side="left", padx=(15, 5))
+            
+            scope_lbl = ctk.CTkLabel(row, text=scope_txt, font=("Segoe UI", 9, "bold"), text_color="#7F8C8D", width=60)
+            scope_lbl.pack(side="left")
             
             # File Info
-            ctk.CTkLabel(row, text=f["name"], font=("Segoe UI", 13, "bold"), text_color="#1A1C1E").pack(side="left", padx=20)
-            ctk.CTkLabel(row, text=f["size"], font=("Segoe UI", 11), text_color="#5F6368").pack(side="left", padx=10)
+            name_lbl = ctk.CTkLabel(row, text=f["name"], font=("Segoe UI", 13, "bold"), text_color="#1A1C1E")
+            name_lbl.pack(side="left", padx=20)
             
-            btns = ctk.CTkFrame(row, fg_color="transparent")
-            btns.pack(side="right", padx=15)
+            size_lbl = ctk.CTkLabel(row, text=f["size"], font=("Segoe UI", 11), text_color="#5F6368")
+            size_lbl.pack(side="left", padx=10)
             
-            ctk.CTkButton(btns, text="⬇", width=35, height=32, font=("Segoe UI", 16),
-                          fg_color="#E8F0FE", text_color="#1A73E8", command=lambda n=f["name"]: self._download_action(n)).pack(side="left", padx=2)
+            # Double-Click Binding
+            row.bind("<Double-Button-1>", lambda e, info=f: self._on_row_double_click(e, info))
+            icon_lbl.bind("<Double-Button-1>", lambda e, info=f: self._on_row_double_click(e, info))
+            scope_lbl.bind("<Double-Button-1>", lambda e, info=f: self._on_row_double_click(e, info))
+            name_lbl.bind("<Double-Button-1>", lambda e, info=f: self._on_row_double_click(e, info))
+            size_lbl.bind("<Double-Button-1>", lambda e, info=f: self._on_row_double_click(e, info))
             
-            ctk.CTkButton(btns, text="🗑", width=35, height=32, font=("Segoe UI", 16),
-                          fg_color="#FDECEA", text_color="#E74C3C", command=lambda n=f["name"]: self._delete_action(n)).pack(side="left", padx=2)
+            if self.role != "admin":
+                btns = ctk.CTkFrame(row, fg_color="transparent")
+                btns.pack(side="right", padx=15)
+               
+                # Delete
+                ctk.CTkButton(btns, text="🗑", width=35, height=32, font=("Segoe UI", 16),
+                              fg_color="#FDECEA", text_color="#E74C3C",
+                              command=lambda n=f["name"]: self._delete_action(n)).pack(side="left", padx=2)
 
     def _on_search_query(self, *args):
         query = self.search_var.get().lower()
@@ -104,23 +131,93 @@ class VaultFrame(ctk.CTkFrame):
         dialog = ctk.CTkInputDialog(text="Enter 'PUBLIC' or a specific Username:", title="Share Settings")
         target = dialog.get_input()
         
-        if target is None: return # User cancelled
+        if target is None: return
         target = target.strip().upper() if target.strip() else "PUBLIC"
 
-        if self.engine.upload_file(path, self.username, target):
+        if self.engine.upload_file(path, self.username, self.role, target):
             self.refresh()
         else:
             messagebox.showerror("Vault Error", "Upload failed. Check server status.")
 
     def _download_action(self, filename):
+        """Save As — logs as DOWNLOAD."""
         path = filedialog.asksaveasfilename(initialfile=filename)
-        if path and self.engine.download_file(filename, path):
+        if path and self.engine.download_file(filename, path, self.username, self.role, action="DOWNLOAD"):
             messagebox.showinfo("SafeLAN", f"Successfully saved {filename}")
 
     def _delete_action(self, filename):
         if messagebox.askyesno("Confirm", f"Remove '{filename}'?"):
-            if self.engine.delete_file(filename): self.refresh()
+            if self.engine.delete_file(filename, self.username, self.role): self.refresh()
 
-    def set_user(self, username):
+    def _on_row_double_click(self, event, file_info):
+        """Downloads the file to a temp location, opens it, then watches for saves (MODIFY)."""
+        filename = file_info["name"]
+        
+        temp_dir = os.path.join(tempfile.gettempdir(), "SafeLAN_Vault")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = os.path.join(temp_dir, filename)
+        
+        # Download and record OPEN
+        if self.engine.download_file(filename, temp_path, self.username, self.role, action="OPEN"):
+            try:
+                os.startfile(temp_path)
+                # Start file watcher to detect saves → MODIFY
+                threading.Thread(
+                    target=self._watch_for_modify,
+                    args=(filename, temp_path, file_info.get("target", "PUBLIC")),
+                    daemon=True
+                ).start()
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not open file: {e}")
+        else:
+            messagebox.showerror("Download Error", "Failed to retrieve file from vault.")
+
+    def _watch_for_modify(self, filename, temp_path, original_target):
+        """Background thread: watches temp file for saves and re-uploads as MODIFY."""
+        print(f"[WATCHER] Started watching: {temp_path}")
+        try:
+            # Wait for file to settle after download before starting watch
+            time.sleep(1)
+            if not os.path.exists(temp_path):
+                print(f"[WATCHER] File not found at start, aborting: {temp_path}")
+                return
+
+            last_mtime = os.path.getmtime(temp_path)
+            last_upload = 0
+            missing_retries = 0
+            deadline = time.time() + 1800  # Watch for up to 30 minutes
+
+            while time.time() < deadline:
+                time.sleep(1)
+
+                # Handle Windows atomic save: file may briefly disappear
+                if not os.path.exists(temp_path):
+                    missing_retries += 1
+                    if missing_retries > 10:
+                        print(f"[WATCHER] File gone for too long, stopping watch: {temp_path}")
+                        break
+                    continue
+                else:
+                    missing_retries = 0
+
+                current_mtime = os.path.getmtime(temp_path)
+                now = time.time()
+
+                # File was modified and enough time since last upload (debounce 3s)
+                if current_mtime != last_mtime and (now - last_upload) > 3:
+                    last_mtime = current_mtime
+                    last_upload = now
+                    print(f"[WATCHER] ✏️  Save detected on '{filename}' — uploading as MODIFY...")
+                    result = self.engine.upload_file(temp_path, self.username, self.role, target=original_target)
+                    if result:
+                        print(f"[WATCHER] ✅ MODIFY recorded for '{filename}'")
+                    else:
+                        print(f"[WATCHER] ❌ Upload failed for '{filename}' — check server")
+
+        except Exception as e:
+            print(f"[WATCHER ERROR] {e}")
+
+    def set_user(self, username, role="user"):
         self.username = username.upper()
+        self.role = role
         self.refresh()

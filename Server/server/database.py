@@ -95,9 +95,37 @@ def get_visible_files(current_user):
     conn.close()
     return [{"name": r["filename"], "owner": r["owner"], "target": r["target_user"], "size": r["file_size"], "date": r["upload_date"]} for r in rows]
 
+def get_file_metadata(filename):
+    """Retrieves metadata for a single file."""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM shared_files WHERE filename = ?', (filename,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def remove_file_metadata(filename):
     """Deletes file metadata upon removal from vault."""
     conn = sqlite3.connect(DB_PATH, timeout=10)
     with conn:
         conn.execute('DELETE FROM shared_files WHERE filename = ?', (filename,))
     conn.close()
+
+def get_all_usernames():
+    """Retrieves all registered usernames."""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute('SELECT username FROM users')
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return list(set(users))
+
+def get_all_filenames():
+    """Retrieves all filenames from the vault."""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute('SELECT filename FROM shared_files')
+    files = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return list(set(files))

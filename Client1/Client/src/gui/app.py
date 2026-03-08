@@ -19,6 +19,7 @@ from Client.src.gui.reg_frame import RegFrame
 from Client.src.gui.dashboard_frame import DashboardFrame
 from Client.src.gui.vault_frame import VaultFrame
 from Client.src.gui.settings_frame import SettingsFrame
+from Client.src.gui.audit_frame import AuditFrame
 
 class SafeLANApp(ctk.CTk):
     def __init__(self):
@@ -46,7 +47,7 @@ class SafeLANApp(ctk.CTk):
         self.container.grid_rowconfigure(0, weight=1)
 
         self.frames = {}
-        for F in (LoginFrame, RegFrame, DashboardFrame, VaultFrame, SettingsFrame):
+        for F in (LoginFrame, RegFrame, DashboardFrame, VaultFrame, SettingsFrame, AuditFrame):
             page_name = F.__name__
             frame = F(master=self.container, controller=self)
             self.frames[page_name] = frame
@@ -79,7 +80,7 @@ class SafeLANApp(ctk.CTk):
         frame = self.frames.get(page_name)
         if not frame: return
 
-        if page_name in ["DashboardFrame", "VaultFrame"]:
+        if page_name in ["DashboardFrame", "VaultFrame", "AuditFrame"]:
             self.set_window_size(1150, 750)
             # GRID ALIGNMENT FIX
             self.sidebar.grid(row=0, column=0, sticky="nsew")
@@ -94,12 +95,21 @@ class SafeLANApp(ctk.CTk):
         if self.current_user_data and page_name == "DashboardFrame":
             frame.update_dashboard(self.current_user_data)
         
+        if hasattr(frame, "refresh"):
+            frame.refresh()
+        
         frame.tkraise()
 
     def login_success(self, auth_data):
         self.current_user_data = auth_data
         status = auth_data.get("status")
         if status == "SUCCESS":
+            # Propagate user context to all frames
+            user_id = auth_data.get('username', 'Unknown')
+            role = auth_data.get('role', 'user')
+            for frame in self.frames.values():
+                if hasattr(frame, 'set_user'):
+                    frame.set_user(user_id, role)
             self.show_frame("DashboardFrame")
         elif status == "CHALLENGE":
             self.show_mfa_challenge(auth_data)
@@ -122,6 +132,7 @@ class SafeLANApp(ctk.CTk):
         ctk.CTkLabel(self.sidebar, text="🛡️", font=("Segoe UI", 50)).pack(pady=(40, 5))
         self._nav_btn("📊 Security Overview", lambda: self.show_frame("DashboardFrame"))
         self._nav_btn("📂 Network Vault", lambda: self.show_frame("VaultFrame"))
+        self._nav_btn("🔍 Audit Explorer", lambda: self.show_frame("AuditFrame"))
         self._nav_btn("⚙️ Settings", lambda: self.show_frame("SettingsFrame"))
         ctk.CTkButton(self.sidebar, text="Logout", fg_color="#E74C3C", command=self.logout).pack(side="bottom", fill="x", padx=20, pady=20)
 

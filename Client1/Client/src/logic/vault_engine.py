@@ -23,18 +23,19 @@ class VaultEngine:
             print(f"Network Connection Failed: {self.api_base}")
             return {"files": [], "count": 0, "total_kb": 0}
 
-    def upload_file(self, local_path, owner_name, target="PUBLIC"):
+    def upload_file(self, local_path, owner_name, role="user", target="PUBLIC"):
         try:
             with open(local_path, "rb") as f:
                 r = requests.post(f"{self.api_base}/files/upload", 
                                 files={"file": (os.path.basename(local_path), f)}, 
-                                data={"owner": owner_name, "target": target}, timeout=5)
+                                data={"owner": owner_name, "role": role, "target": target}, timeout=5)
                 return r.status_code == 200
         except: return False
 
-    def download_file(self, filename, save_path):
+    def download_file(self, filename, save_path, user="Unknown", role="user", action="DOWNLOAD"):
         try:
-            r = requests.get(f"{self.api_base}/files/download/{filename}", stream=True, timeout=10)
+            params = {"user": user, "role": role, "action": action}
+            r = requests.get(f"{self.api_base}/files/download/{filename}", params=params, stream=True, timeout=10)
             if r.status_code == 200:
                 with open(save_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
@@ -42,6 +43,8 @@ class VaultEngine:
             return False
         except: return False
 
-    def delete_file(self, filename):
-        try: return requests.delete(f"{self.api_base}/files/delete/{filename}", timeout=3).status_code == 200
+    def delete_file(self, filename, user="Unknown", role="user"):
+        try: 
+            params = {"user": user, "role": role}
+            return requests.delete(f"{self.api_base}/files/delete/{filename}", params=params, timeout=3).status_code == 200
         except: return False

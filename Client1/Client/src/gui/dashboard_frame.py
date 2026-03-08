@@ -8,6 +8,7 @@ class DashboardFrame(ctk.CTkFrame):
         self.controller = controller
         self.api_base = getattr(self.controller, 'api_base', "http://127.0.0.1:8000")
         self.username = "Unknown"
+        self.role = "user"
 
         # Configure frame to expand content properly
         self._setup_main_content()
@@ -28,7 +29,7 @@ class DashboardFrame(ctk.CTkFrame):
         self.ti_val = self._create_card(self.m_row, "TRUST INDEX", "#1A73E8")
         self.svm_val = self._create_card(self.m_row, "SVM SCORE", "#27AE60")
         self.ctx_val = self._create_card(self.m_row, "CONTEXT MATCH", "#1A1C1E")
-
+        
         # Vault Quick-Access Area
         self.vault_container = ctk.CTkFrame(self.main_area, fg_color="#FFFFFF", corner_radius=20, 
                                             border_width=1, border_color="#D1D9E6")
@@ -38,7 +39,10 @@ class DashboardFrame(ctk.CTkFrame):
         v_head.pack(fill="x", padx=25, pady=20)
         
         ctk.CTkLabel(v_head, text="Network Quick-Access", font=("Segoe UI", 20, "bold")).pack(side="left")
-        ctk.CTkButton(v_head, text="+ Share File", width=120, command=self._upload).pack(side="right")
+        
+        if self.role != "admin":
+            self.up_file_btn = ctk.CTkButton(v_head, text="+ Share File", width=120, command=self._upload)
+            self.up_file_btn.pack(side="right")
         
         self.file_scroll = ctk.CTkScrollableFrame(self.vault_container, fg_color="transparent")
         self.file_scroll.pack(fill="both", expand=True, padx=20, pady=(0, 10))
@@ -63,12 +67,21 @@ class DashboardFrame(ctk.CTkFrame):
 
     def update_dashboard(self, data):
         self.username = data.get('username', 'User').upper()
+        self.role = data.get('role', 'user')
         self.u_identity_lbl.configure(text=f"AUTHORIZED SESSION: {self.username}", text_color="#27AE60")
         self.ti_val.configure(text=f"{data.get('trust_index', 0)}%")
         
         raw_svm = data.get('svm_score', 0.0)
         self.svm_val.configure(text=f"{float(raw_svm):.6f}")
         self.ctx_val.configure(text=f"{data.get('context_score', 0)}/100")
+        
+        # New: Hide share button if admin
+        if hasattr(self, "up_file_btn"):
+            if self.role == "admin":
+                self.up_file_btn.pack_forget()
+            else:
+                self.up_file_btn.pack(side="right")
+        
         self.refresh_vault()
 
     def refresh_vault(self):
@@ -88,34 +101,43 @@ class DashboardFrame(ctk.CTkFrame):
             row.pack(fill="x", pady=5); row.pack_propagate(False)
             ctk.CTkLabel(row, text="📄", font=("Segoe UI", 18)).pack(side="left", padx=15)
             ctk.CTkLabel(row, text=f["name"], font=("Segoe UI", 13, "bold")).pack(side="left")
-            
-            actions = ctk.CTkFrame(row, fg_color="transparent")
-            actions.pack(side="right", padx=15)
-            ctk.CTkButton(actions, text="⬇", width=35, height=32, 
-                          command=lambda n=f["name"]: self._download(n)).pack(side="left", padx=2)
-            ctk.CTkButton(actions, text="🗑", width=35, height=32, 
-                          command=lambda n=f["name"]: self._delete(n)).pack(side="left", padx=2)
+            if self.role != "admin":
+                actions = ctk.CTkFrame(row, fg_color="transparent")
+                actions.pack(side="right", padx=15)
+                # Removed the download button as per instruction
+                ctk.CTkButton(actions, text="🗑", width=35, height=32, 
+                              command=lambda n=f["name"]: self._delete(n)).pack(side="left", padx=2)
 
     def _upload(self):
         p = filedialog.askopenfilename()
         if p:
             def do():
                 try:
+                    # Prompt for target just like VaultFrame
+                    target = "PUBLIC" 
+                    # We'll use a simple prompt logic or just default to PUBLIC for dashboard quick upload
+                    # To keep it simple but functional:
                     with open(p, "rb") as f:
                         requests.post(f"{self.api_base}/files/upload", 
                                       files={"file": (os.path.basename(p), f)}, 
-                                      data={"owner": self.username})
+                                      data={"owner": self.username, "role": self.role, "target": "PUBLIC"})
                     self.refresh_vault()
                 except Exception as e: 
                     self.after(0, lambda: messagebox.showerror("Upload Error", str(e)))
             threading.Thread(target=do, daemon=True).start()
+
+    def set_user(self, username, role="user"):
+        self.username = username.upper()
+        self.role = role
+        self.refresh_vault()
 
     def _download(self, filename):
         save_path = filedialog.asksaveasfilename(initialfile=filename)
         if save_path:
             def do():
                 try:
-                    r = requests.get(f"{self.api_base}/files/download/{filename}", stream=True)
+                    params = {"user": self.username, "role": self.role, "action": "DOWNLOAD"}
+                    r = requests.get(f"{self.api_base}/files/download/{filename}", params=params, stream=True)
                     with open(save_path, 'wb') as f:
                         for chunk in r.iter_content(8192): f.write(chunk)
                     self.after(0, lambda: messagebox.showinfo("SafeLAN", f"Downloaded {filename}"))
@@ -125,5 +147,5 @@ class DashboardFrame(ctk.CTkFrame):
 
     def _delete(self, name):
         if messagebox.askyesno("Confirm", f"Delete {name}?"):
-            requests.delete(f"{self.api_base}/files/delete/{name}")
+            requests.delete(f"{self.api_base}/files/delete/{name}", params={"user": self.username, "role": self.role})
             self.refresh_vault()
