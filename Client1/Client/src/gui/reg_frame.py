@@ -1,5 +1,5 @@
 import customtkinter as ctk
-import time, re
+import time, re, requests
 from Client.src.logic.reg_engine import RegEngine
 from config.client_settings import REQUIRED_SAMPLES 
 
@@ -12,6 +12,7 @@ class RegFrame(ctk.CTkFrame):
         self.controller, self.engine, self.temp_events = controller, RegEngine(), []
         self.pack_propagate(False)
         self._setup_ui()
+        self.check_server_status()
 
     def _setup_ui(self):
         # Branding Header
@@ -42,6 +43,9 @@ class RegFrame(ctk.CTkFrame):
         self.input_box.bind("<KeyRelease>", lambda e: self.temp_events.append({'k':e.keysym,'t':time.time(),'a':'r'}))
         self.input_box.bind("<Return>", self.handle_sample)
 
+        self.status_lbl = ctk.CTkLabel(self, text="", font=("Segoe UI", 13, "bold"))
+        self.status_lbl.pack(pady=5)
+
         ctk.CTkButton(self, text="Cancel & Back", font=("Segoe UI", 13), fg_color="transparent", 
                       text_color="#4F4F4F", command=lambda: self.controller.show_frame("LoginFrame")).pack(pady=20)
 
@@ -60,6 +64,7 @@ class RegFrame(ctk.CTkFrame):
     def handle_sample(self, event):
         uid, email, target, typed = self.u_entry.get().strip(), self.e_entry.get().strip(), self.p_entry.get(), self.input_box.get()
         if not uid or not email or typed != target or len(target) < 8:
+            self.status_lbl.configure(text="Invalid inputs or password mismatch", text_color="#E74C3C")
             self.input_box.configure(border_color="#E74C3C")
             self.temp_events.clear()
             self.input_box.delete(0, 'end')
@@ -70,7 +75,24 @@ class RegFrame(ctk.CTkFrame):
         self.prog_lbl.configure(text=f"Captures: {count} / {REQUIRED_SAMPLES}")
         
         if self.engine.ready():
-            if self.engine.save_and_train(uid, target, email): self.controller.show_frame("LoginFrame")
+            self.status_lbl.configure(text="Processing & Training...", text_color="#3498DB")
+            self.update()
+            if self.engine.save_and_train(uid, target, email): 
+                self.controller.show_frame("DashboardFrame") # Go to dashboard on success
+            else:
+                self.status_lbl.configure(text="Registration Failed! Is the server running?", text_color="#E74C3C")
+                self.input_box.configure(border_color="#E74C3C")
         
         self.temp_events.clear()
         self.input_box.delete(0, 'end')
+
+    def check_server_status(self):
+        """Checks if the server is online (One-time check on load)."""
+        try:
+            r = requests.get(f"{self.controller.api_base}/health", timeout=1)
+            if r.status_code == 200:
+                self.status_lbl.configure(text="● Connection Active", text_color="#2ECC71")
+            else:
+                self.status_lbl.configure(text="● Server Status Unknown", text_color="#F1C40F")
+        except:
+            self.status_lbl.configure(text="● Server Offline (Start run_server.py)", text_color="#E74C3C")
