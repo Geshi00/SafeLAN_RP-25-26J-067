@@ -158,7 +158,9 @@ class AuditFrame(ctk.CTkFrame):
                 if self.user_role == "admin":
                     r = requests.get(f"{self.api_base}/users/all", timeout=3)
                     options = r.json()
-                    if "PUBLIC" not in options: options.append("PUBLIC")
+                    if "PUBLIC" in options: 
+                        options.remove("PUBLIC")
+                    options.insert(0, "PUBLIC") # Add PUBLIC as first option
                 else:
                     options = [self.username, "PUBLIC"]
             else:
